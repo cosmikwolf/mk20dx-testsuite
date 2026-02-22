@@ -1,0 +1,111 @@
+[package]
+name = "mk20dx-testsuite"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+mk20dx-hal = { path = "../mk20dx-hal", features = ["mk20d7", "rt", "critical-section", "defmt"] }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+defmt = "0.3"
+defmt-rtt = "0.4"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+embedded-hal = "1.0"
+embedded-hal-nb = "1.0"
+embedded-io = "0.6"
+nb = "1.1"
+fugit = "0.3"
+usb-device = "0.3"
+embedded-storage = "0.3"
+
+[dev-dependencies]
+defmt-test = "0.3"
+
+# Optimize dependencies in debug builds — critical for timing-sensitive
+# peripheral sequences like the WDOG unlock (20 bus cycle window).
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Keep existing bin
+[[bin]]
+name = "hello"
+test = false
+
+# Self-test binaries (no external wiring)
+[[test]]
+name = "watchdog"
+harness = false
+[[test]]
+name = "clocks"
+harness = false
+[[test]]
+name = "gpio"
+harness = false
+[[test]]
+name = "delay"
+harness = false
+[[test]]
+name = "timer"
+harness = false
+[[test]]
+name = "adc"
+harness = false
+[[test]]
+name = "dma"
+harness = false
+[[test]]
+name = "pwm"
+harness = false
+[[test]]
+name = "i2c"
+harness = false
+[[test]]
+name = "usb"
+harness = false
+
+# Additional self-test binaries (Phases 13-21)
+[[test]]
+name = "crc"
+harness = false
+[[test]]
+name = "dac"
+harness = false
+[[test]]
+name = "flash"
+harness = false
+[[test]]
+name = "eeprom"
+harness = false
+[[test]]
+name = "lptmr"
+harness = false
+[[test]]
+name = "rtc"
+harness = false
+[[test]]
+name = "cmp"
+harness = false
+[[test]]
+name = "power"
+harness = false
+[[test]]
+name = "llwu"
+harness = false
+[[test]]
+name = "pwm_advanced"
+harness = false
+
+# Loopback test binaries (require wiring)
+[[test]]
+name = "gpio_loopback"
+harness = false
+[[test]]
+name = "uart_loopback"
+harness = false
+[[test]]
+name = "spi_loopback"
+harness = false
