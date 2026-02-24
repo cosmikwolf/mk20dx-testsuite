@@ -6,14 +6,21 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use defmt_rtt as _;
 use panic_probe as _;
+
+use embedded_alloc::LlffHeap as Heap;
+
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
 
 use embedded_hal::pwm::SetDutyCycle;
 use mk20dx_hal as hal;
 use hal::pac;
 use hal::prelude::*;
-use hal::pwm::{Ftm1Channels, FtmExt};
+use hal::pwm::{Ftm1Channels, FtmExt, calc_prescaler};
 use hal::time::U32Ext;
 
 struct State {
@@ -23,12 +30,20 @@ struct State {
 #[defmt_test::tests]
 mod tests {
     use super::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    const HEAP_SIZE: usize = 8192;
+    static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
     #[init]
     fn init() -> super::State {
         let dp = pac::Peripherals::take().unwrap();
         dp.wdog.disable();
         let clocks = dp.mcg.constrain().freeze(dp.osc, &dp.sim);
+
+        // Initialize heap allocator for proptest
+        unsafe { super::HEAP.init((&raw mut HEAP_MEM) as usize, HEAP_SIZE) }
+
         let mut ftm1 = dp.ftm1.pwm(1000u32.Hz(), &clocks, &dp.sim);
         // Enable ch0 in PWM mode so CnV writes take effect
         ftm1.ch0.enable();
@@ -125,5 +140,84 @@ mod tests {
             sc.ps().is_div1(),
             "PS should be div1 for 1kHz at 36MHz bus"
         );
+    }
+
+    // ----- Property-based tests -----
+
+    /// calc_prescaler always returns ps_idx in 0..=7.
+    #[test]
+    fn test_prescaler_output_range(_state: &mut super::State) {
+        let config = Config::with_cases(32);
+        let mut runner = TestRunner::new(config);
+
+        let strategy = (1u32..=100_000_000, 1u32..=10_000_000);
+
+        let result = runner.run(&strategy, |(bus_clk, target_freq)| {
+            let (ps_idx, _mod_val) = calc_prescaler(bus_clk, target_freq);
+
+            proptest::prop_assert!(
+                ps_idx <= 7,
+                "ps_idx {} out of range for bus_clk={}, target_freq={}",
+                ps_idx,
+                bus_clk,
+                target_freq
+            );
+
+            Ok(())
+        });
+
+        match result {
+            Ok(()) => defmt::info!("prescaler output range: PASSED (32 cases)"),
+            Err(e) => {
+                defmt::error!("prescaler output range FAILED: {}", e);
+                defmt::assert!(false, "Property test failed");
+            }
+        }
+    }
+
+    /// The selected prescaler/mod combo should produce a reasonable frequency.
+    #[test]
+    fn test_prescaler_frequency_bounded(_state: &mut super::State) {
+        let config = Config::with_cases(32);
+        let mut runner = TestRunner::new(config);
+
+        let strategy = (1_000_000u32..=72_000_000, 100u32..=1_000_000);
+
+        let result = runner.run(&strategy, |(bus_clk, target_freq)| {
+            let (ps_idx, mod_val) = calc_prescaler(bus_clk, target_freq);
+
+            let divider: u32 = 1 << ps_idx;
+            let counter_clk = bus_clk / divider;
+            let actual_freq = counter_clk / (mod_val as u32 + 1);
+
+            proptest::prop_assert!(
+                actual_freq <= target_freq * 2,
+                "actual_freq {} > 2 * target {} for bus_clk={}, ps_idx={}, mod_val={}",
+                actual_freq,
+                target_freq,
+                bus_clk,
+                ps_idx,
+                mod_val
+            );
+
+            Ok(())
+        });
+
+        match result {
+            Ok(()) => defmt::info!("prescaler frequency bounded: PASSED (32 cases)"),
+            Err(e) => {
+                defmt::error!("prescaler frequency bounded FAILED: {}", e);
+                defmt::assert!(false, "Property test failed");
+            }
+        }
+    }
+
+    /// Fallback case: impossible frequencies should return (7, 0xFFFF).
+    #[test]
+    fn test_prescaler_fallback(_state: &mut super::State) {
+        let (ps_idx, mod_val) = calc_prescaler(1, 1_000_000);
+        defmt::info!("fallback: ps_idx={}, mod_val={}", ps_idx, mod_val);
+        defmt::assert_eq!(ps_idx, 7, "Should fall back to max prescaler");
+        defmt::assert_eq!(mod_val, 0xFFFF, "Should fall back to max mod");
     }
 }

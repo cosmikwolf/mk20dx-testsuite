@@ -8,12 +8,19 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use defmt_rtt as _;
 use panic_probe as _;
 
+use embedded_alloc::LlffHeap as Heap;
+
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
+
 use core::sync::atomic::{compiler_fence, Ordering};
 use mk20dx_hal as hal;
-use hal::dma::{DmaChannels, DmaExt, DmaSource, TransferConfig, TransferSize};
+use hal::dma::{DmaChannels, DmaExt, DmaSource, ScatterGatherTcd, TransferConfig, TransferSize, dchpri_index};
 use hal::pac;
 use hal::prelude::*;
 
@@ -25,11 +32,18 @@ struct State {
 mod tests {
     use super::*;
 
+    const HEAP_SIZE: usize = 8192;
+    static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+
     #[init]
     fn init() -> super::State {
         let dp = pac::Peripherals::take().unwrap();
         dp.wdog.disable();
         let _clocks = dp.mcg.constrain().freeze(dp.osc, &dp.sim);
+
+        // Initialize heap allocator for proptest
+        unsafe { super::HEAP.init((&raw mut HEAP_MEM) as usize, HEAP_SIZE) }
+
         let dma = dp.dma.split(dp.dmamux, &dp.sim);
         super::State { dma }
     }
@@ -295,5 +309,79 @@ mod tests {
 
         // Clear the error so it doesn't affect subsequent tests
         state.dma.ch0.clear_error();
+    }
+
+    // ----- Property-based tests -----
+
+    /// attr_from_sizes should only set bits in SSIZE[10:8] and DSIZE[2:0] fields.
+    /// Exhaustive test over all 16 combos of TransferSize.
+    #[test]
+    fn test_attr_from_sizes_bit_isolation(_state: &mut super::State) {
+        let sizes = [
+            TransferSize::Bits8,
+            TransferSize::Bits16,
+            TransferSize::Bits32,
+            TransferSize::Burst16,
+        ];
+
+        for &src in &sizes {
+            for &dst in &sizes {
+                let attr = ScatterGatherTcd::attr_from_sizes(src, dst);
+                // SSIZE is bits [10:8], DSIZE is bits [2:0]
+                // Valid mask: 0x0707
+                let invalid_bits = attr & !0x0707;
+                defmt::assert_eq!(
+                    invalid_bits, 0,
+                    "attr_from_sizes set bits outside SSIZE/DSIZE: attr=0x{:04X}",
+                    attr
+                );
+            }
+        }
+        defmt::info!("attr_from_sizes bit isolation: PASSED (16 combos)");
+    }
+
+    /// dchpri_index should produce a bijection within each 4-byte group.
+    /// Channels 0..16 should map to unique indices.
+    #[test]
+    fn test_dchpri_index_bijection(_state: &mut super::State) {
+        // Check all 16 channels produce unique indices
+        let mut seen = [false; 16];
+        for ch in 0u8..16 {
+            let idx = dchpri_index(ch);
+            defmt::assert!(
+                idx < 16,
+                "dchpri_index({}) = {} out of range",
+                ch,
+                idx
+            );
+            defmt::assert!(
+                !seen[idx],
+                "dchpri_index({}) = {} already used",
+                ch,
+                idx
+            );
+            seen[idx] = true;
+        }
+
+        // Within each 4-channel group, verify byte-swap pattern:
+        // ch0→idx3, ch1→idx2, ch2→idx1, ch3→idx0
+        for group in 0..4u8 {
+            let base = group * 4;
+            for offset in 0..4u8 {
+                let ch = base + offset;
+                let idx = dchpri_index(ch);
+                let expected = (base + 3 - offset) as usize;
+                defmt::assert_eq!(
+                    idx,
+                    expected,
+                    "dchpri_index({}) = {}, expected {}",
+                    ch,
+                    idx,
+                    expected
+                );
+            }
+        }
+
+        defmt::info!("dchpri_index bijection: PASSED (16 channels)");
     }
 }

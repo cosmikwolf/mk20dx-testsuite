@@ -21,6 +21,8 @@ embedded-storage = "0.3"
 
 [dev-dependencies]
 defmt-test = "0.3"
+proptest = { git = "https://github.com/cosmikwolf/proptest.git", branch = "feat/defmt-format", default-features = false, features = ["no_std", "alloc", "defmt"] }
+embedded-alloc = "0.6"
 
 # Optimize dependencies in debug builds — critical for timing-sensitive
 # peripheral sequences like the WDOG unlock (20 bus cycle window).
@@ -97,6 +99,14 @@ name = "llwu"
 harness = false
 [[test]]
 name = "pwm_advanced"
+harness = false
+
+# Standalone proptest-based tests
+[[test]]
+name = "uart"
+harness = false
+[[test]]
+name = "spi"
 harness = false
 
 # Loopback test binaries (require wiring)
