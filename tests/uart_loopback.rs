@@ -56,17 +56,16 @@ mod tests {
     }
 
     /// Send [0x01, 0x02, 0x03, 0x04], receive in order.
+    /// UART2 has a 1-entry RX buffer, so we must read each byte before
+    /// sending the next to avoid RX overrun.
     #[test]
     fn test_multiple_bytes(state: &mut super::State) {
         let data = [0x01u8, 0x02, 0x03, 0x04];
         for &byte in &data {
             nb::block!(state.serial.write(byte)).unwrap();
-        }
-        nb::block!(state.serial.flush()).unwrap();
-
-        for &expected in &data {
+            nb::block!(state.serial.flush()).unwrap();
             let received = nb::block!(state.serial.read()).unwrap();
-            defmt::assert_eq!(received, expected, "Byte mismatch in sequence");
+            defmt::assert_eq!(received, byte, "Byte mismatch in sequence");
         }
     }
 
