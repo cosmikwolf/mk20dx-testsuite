@@ -1,5 +1,5 @@
 SELF_TESTS = watchdog clocks gpio delay timer adc dma pwm i2c usb \
-             crc dac flash eeprom lptmr rtc cmp power llwu pwm_advanced
+             crc dac flash eeprom lptmr rtc cmp power llwu pwm_advanced ftm_dma
 
 LOOPBACK_TESTS = gpio_loopback uart_loopback spi_loopback
 
