@@ -38,7 +38,7 @@ mod tests {
     fn test_clock_gate_enabled(_state: &mut super::State) {
         let sim = unsafe { &*pac::Sim::PTR };
         defmt::assert!(
-            sim.scgc2().read().dac0().is_1(),
+            sim.scgc2().read().dac0().is_enabled(),
             "DAC0 clock gate should be enabled"
         );
     }

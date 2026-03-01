@@ -46,7 +46,7 @@ mod tests {
     fn test_clock_gate_enabled(_state: &mut super::State) {
         let sim = unsafe { &*pac::Sim::PTR };
         defmt::assert!(
-            sim.scgc4().read().usbotg().is_1(),
+            sim.scgc4().read().usbotg().is_enabled(),
             "USBOTG clock gate should be enabled"
         );
     }

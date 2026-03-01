@@ -79,7 +79,7 @@ mod tests {
     fn test_system_functional_after_disable(_state: &mut super::State) {
         // Enable PORTD clock gate
         let sim = unsafe { &*pac::Sim::PTR };
-        sim.scgc5().modify(|_, w| w.portd()._1());
+        sim.scgc5().modify(|_, w| w.portd().enabled());
 
         // Set PTD0 as output
         let ptd = unsafe { &*pac::Ptd::PTR };

@@ -45,7 +45,7 @@ mod tests {
     fn test_clock_gate_enabled(_state: &mut super::State) {
         let sim = unsafe { &*pac::Sim::PTR };
         defmt::assert!(
-            sim.scgc5().read().lptimer().is_1(),
+            sim.scgc5().read().lptimer().is_enabled(),
             "LPTMR clock gate should be enabled"
         );
     }

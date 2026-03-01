@@ -18,7 +18,7 @@ fn main() -> ! {
     dp.wdog.disable();
 
     // Enable PORTC clock gate
-    dp.sim.scgc5().modify(|_, w| w.portc()._1());
+    dp.sim.scgc5().modify(|_, w| w.portc().enabled());
 
     // Set PTC5 (Teensy pin 13) to GPIO mode
     dp.portc.pcr(5).write(|w| w.mux().gpio());

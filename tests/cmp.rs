@@ -40,7 +40,7 @@ mod tests {
     fn test_clock_gate_enabled(_state: &mut super::State) {
         let sim = unsafe { &*pac::Sim::PTR };
         defmt::assert!(
-            sim.scgc4().read().cmp().is_1(),
+            sim.scgc4().read().cmp().is_enabled(),
             "CMP clock gate should be enabled"
         );
     }
