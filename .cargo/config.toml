@@ -9,3 +9,7 @@ target = "thumbv7em-none-eabi"
 
 [env]
 DEFMT_LOG = "debug"
+# Which probe to use, as VID:PID:SERIAL. Needed once more than one is plugged
+# in; `probe-rs list` prints the selector for each. Override in the environment
+# to run against a different probe.
+PROBE_SELECTOR = "1366:0105:000600109129"
