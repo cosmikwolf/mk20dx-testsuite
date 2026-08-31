@@ -1,7 +1,7 @@
 [target.thumbv7em-none-eabi]
-# --connect-under-reset is required: without it the Kinetis SWD link drops
-# partway through the flash erase, usually around 0x0000b000.
-runner = "probe-rs run --chip MK20DX256xxx7 --chip-description-path ../mk20dx-hal/resources/K20_Series.yaml --connect-under-reset"
+# probe-runner.sh wraps probe-rs with --connect-under-reset, which the Kinetis
+# needs to survive the flash erase, and retries a failed SWD handshake.
+runner = "./probe-runner.sh"
 # runner = "./jlink-runner.sh"
 
 [build]

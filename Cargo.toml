@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+# Tests that need a wire between two pins are gated on this feature, so a plain
+# `cargo test` runs only what a bare board can pass.
+[features]
+loopback = []
+
 [dependencies]
 mk20dx-hal = { path = "../mk20dx-hal", features = ["mk20d7", "rt", "critical-section", "defmt"] }
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
@@ -125,9 +130,12 @@ harness = false
 [[test]]
 name = "gpio_loopback"
 harness = false
+required-features = ["loopback"]
 [[test]]
 name = "uart_loopback"
 harness = false
+required-features = ["loopback"]
 [[test]]
 name = "spi_loopback"
 harness = false
+required-features = ["loopback"]
