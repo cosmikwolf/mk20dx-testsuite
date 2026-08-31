@@ -101,7 +101,16 @@ harness = false
 name = "pwm_advanced"
 harness = false
 [[test]]
+name = "pwm_combined"
+harness = false
+[[test]]
 name = "ftm_dma"
+harness = false
+[[test]]
+name = "clocks_96mhz"
+harness = false
+[[test]]
+name = "clocks_120mhz"
 harness = false
 
 # Standalone proptest-based tests
