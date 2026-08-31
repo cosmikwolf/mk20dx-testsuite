@@ -192,6 +192,56 @@ mod tests {
         defmt::assert!(!saw_edge, "0% duty should produce no rising edge");
     }
 
+    /// A masked channel stops driving the pin.
+    ///
+    /// pwm_combined checks OUTMASK-adjacent bits; nothing checked that masking
+    /// silences an output. This watches the pin go quiet and come back.
+    #[test]
+    fn test_output_mask_silences_the_pin(state: &mut super::State) {
+        // Confirm there is a waveform to silence.
+        let _ = capture(&mut state.ftm0.ch2, CaptureEdge::Rising);
+
+        state.ftm0.timer.set_output_mask(1 << 0);
+        defmt::assert_eq!(state.ftm0.timer.output_mask(), 1, "OUTMASK should read back");
+
+        state.ftm0.ch2.set_input_capture(CaptureEdge::Rising);
+        state.ftm0.ch2.clear_flag();
+        cortex_m::asm::delay(400_000); // several periods
+        let edge_while_masked = state.ftm0.ch2.has_flag();
+
+        state.ftm0.timer.set_output_mask(0);
+        defmt::assert_eq!(state.ftm0.timer.output_mask(), 0, "OUTMASK should clear");
+
+        state.ftm0.ch2.clear_flag();
+        cortex_m::asm::delay(400_000);
+        let edge_after_unmask = state.ftm0.ch2.has_flag();
+
+        defmt::info!(
+            "edge while masked: {}, after unmask: {}",
+            edge_while_masked, edge_after_unmask
+        );
+        defmt::assert!(!edge_while_masked, "masked channel still drove the pin");
+        defmt::assert!(edge_after_unmask, "output did not return after unmasking");
+    }
+
+    /// Masking one channel leaves the others alone.
+    #[test]
+    fn test_channel_mask_is_per_channel(state: &mut super::State) {
+        state.ftm0.timer.set_output_mask(0);
+        state.ftm0.timer.set_channel_masked(3, true);
+        defmt::assert_eq!(state.ftm0.timer.output_mask(), 0b0000_1000);
+
+        state.ftm0.timer.set_channel_masked(5, true);
+        defmt::assert_eq!(state.ftm0.timer.output_mask(), 0b0010_1000);
+
+        state.ftm0.timer.set_channel_masked(3, false);
+        defmt::assert_eq!(state.ftm0.timer.output_mask(), 0b0010_0000);
+
+        // Channel 0 drives the loopback, so it must still be running.
+        state.ftm0.timer.set_output_mask(0);
+        let _ = capture(&mut state.ftm0.ch2, CaptureEdge::Rising);
+    }
+
     /// The counter is free-running, so successive captures advance.
     #[test]
     fn test_counter_is_running(state: &mut super::State) {
