@@ -19,6 +19,13 @@ CHIP_DESC="../mk20dx-hal/resources/K20_Series.yaml"
 PROBE_ARG=()
 if [ -n "${PROBE_SELECTOR:-}" ]; then
     PROBE_ARG=(--probe "$PROBE_SELECTOR")
+elif [ "$(probe-rs list 2>/dev/null | grep -c '^\[')" -gt 1 ]; then
+    # probe-rs falls back to an interactive prompt here, which just fails under
+    # cargo. Say what to do instead.
+    echo "probe-runner: more than one probe attached and PROBE_SELECTOR is unset." >&2
+    echo "              Set it to VID:PID:SERIAL from \`probe-rs list\`, in" >&2
+    echo "              .cargo/config.toml [env] or the environment." >&2
+    exit 1
 fi
 
 LOG="$(mktemp)"
@@ -33,6 +40,13 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
 
     # The firmware started, so this is a real test failure, not a bad connect.
     if grep -q 'running `' "$LOG"; then
+        exit "$status"
+    fi
+
+    # Another process holds the probe. Retrying cannot help.
+    if grep -q 'exclusive access' "$LOG"; then
+        echo "probe-runner: the probe is held by another process." >&2
+        echo "              Check for a leftover probe-rs from an interrupted run." >&2
         exit "$status"
     fi
 
