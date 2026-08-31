@@ -148,3 +148,7 @@ required-features = ["loopback"]
 name = "ftm_loopback"
 harness = false
 required-features = ["loopback"]
+[[test]]
+name = "ftm_combined_loopback"
+harness = false
+required-features = ["loopback"]
