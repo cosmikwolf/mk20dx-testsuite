@@ -50,6 +50,21 @@ mod tests {
         super::State { ftm1 }
     }
 
+    /// The plain PWM path must leave MODE[FTMEN] clear.
+    ///
+    /// Ref manual Table 36-245: with CLKS != 0:0 and FTMEN = 1, an EPWM channel
+    /// only reloads CnV through PWM synchronization, which a single channel has
+    /// none of. Legacy mode reloads it at MOD -> CNTIN instead, so duty updates
+    /// land. Setting FTMEN here would silently freeze every CnV write.
+    #[test]
+    fn test_ftmen_clear_for_single_channel(_state: &mut super::State) {
+        let ftm1 = unsafe { &*pac::Ftm1::PTR };
+        defmt::assert!(
+            ftm1.mode().read().ftmen().bit_is_clear(),
+            "FTMEN must stay clear for plain PWM, or CnV writes never latch"
+        );
+    }
+
     /// max_duty_cycle() should be nonzero after PWM initialization.
     #[test]
     fn test_max_duty_nonzero(state: &mut super::State) {

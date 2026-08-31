@@ -65,6 +65,21 @@ mod tests {
     // --- Combined mode initialization ---
 
     /// After into_combined(), COMBINE register should have COMBINE0=1 and SYNCEN0=1.
+    /// Combined mode must set MODE[FTMEN].
+    ///
+    /// Combine, COMP, dead-time, output masking and inversion are all FTM
+    /// features-mode functions, and the sync machinery the pair configures
+    /// (SWWRBUF, CNTMIN, SYNCEN) only exists when FTMEN is set. Nothing else in
+    /// this suite checks the bit.
+    #[test]
+    fn test_ftmen_set_for_combined(_state: &mut super::State) {
+        let ftm0 = unsafe { &*pac::Ftm0::PTR };
+        defmt::assert!(
+            ftm0.mode().read().ftmen().bit_is_set(),
+            "FTMEN must be set for combined mode"
+        );
+    }
+
     #[test]
     fn test_combine_bits_set(_state: &mut super::State) {
         let ftm0 = unsafe { &*pac::Ftm0::PTR };
