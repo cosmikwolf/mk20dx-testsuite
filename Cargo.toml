@@ -98,6 +98,12 @@ harness = false
 name = "cmp"
 harness = false
 [[test]]
+name = "dac_cmp_analog"
+harness = false
+[[test]]
+name = "pdb"
+harness = false
+[[test]]
 name = "power"
 harness = false
 [[test]]
