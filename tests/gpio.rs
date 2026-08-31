@@ -123,7 +123,7 @@ mod tests {
             let portd = unsafe { &*pac::Portd::PTR };
             let ptd = unsafe { &*pac::Ptd::PTR };
             ptd.pddr().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 4)) });
-            portd.pcr(4).write(|w| w.mux().gpio().pe()._1().ps()._1());
+            portd.pcr(4).write(|w| w.mux().gpio().pe().enabled().ps().pull_up());
             cortex_m::asm::delay(1000);
             let is_high = ptd.pdir().read().bits() & (1 << 4) != 0;
             defmt::assert!(is_high, "Pull-up pin should read high");
@@ -136,8 +136,8 @@ mod tests {
         let portd = unsafe { &*pac::Portd::PTR };
         let ptd = unsafe { &*pac::Ptd::PTR };
         ptd.pddr().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 4)) });
-        portd.pcr(4).write(|w| w.mux().gpio().pe()._1().ps()._0());
-        cortex_m::asm::delay(1000);
+        portd.pcr(4).write(|w| w.mux().gpio().pe().enabled().ps().pull_down());
+        cortex_m::asm::delay(10_000);
         let is_low = ptd.pdir().read().bits() & (1 << 4) == 0;
         defmt::assert!(is_low, "Pull-down pin should read low");
     }
@@ -176,7 +176,7 @@ mod tests {
 
         // Set as input
         ptd.pddr().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 4)) });
-        portd.pcr(4).write(|w| w.mux().gpio().pe()._1().ps()._1());
+        portd.pcr(4).write(|w| w.mux().gpio().pe().enabled().ps().pull_up());
 
         // Verify direction is input
         defmt::assert!(
@@ -205,7 +205,7 @@ mod tests {
 
         // Configure as open-drain output
         ptc.pddr().modify(|r, w| unsafe { w.bits(r.bits() | (1 << 5)) });
-        portc.pcr(5).write(|w| w.mux().gpio().ode()._1());
+        portc.pcr(5).write(|w| w.mux().gpio().ode().enabled());
 
         // Set low
         ptc.pcor().write(|w| unsafe { w.bits(1 << 5) });

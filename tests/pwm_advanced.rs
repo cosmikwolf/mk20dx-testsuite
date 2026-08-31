@@ -1,9 +1,8 @@
 //! FTM advanced feature self-tests — validates Input Capture, Output Compare,
 //! and Quadrature Decoder modes via register checks.
 //!
-//! FTM0 is used for OC (ch0) and IC (ch1). FTM2 is used for QuadratureDecoder.
-//! MOD is set to 0xFFFF manually so the counter actually runs through a
-//! full 16-bit range.
+//! FTM0 uses the split API: timer handle controls MOD/counter, ch0 is OC,
+//! ch1 is IC. FTM2 uses standalone QuadratureDecoder.
 //!
 //! Priority: MEDIUM
 //! Wiring: None
@@ -17,14 +16,18 @@ use panic_probe as _;
 use mk20dx_hal as hal;
 use hal::pac;
 use hal::prelude::*;
+use hal::clocks::Clocks;
 use hal::pwm::{
-    CaptureEdge, CompareAction, Ftm0, Ftm2, InputCapture, OutputCompare,
+    CaptureEdge, CompareAction, Ftm0Parts, Ftm1Parts, Ftm2,
+    FtmExt, PwmAlignment, PwmPolarity,
     QuadMode, QuadratureDecoder,
 };
+use hal::time::U32Ext;
 
 struct State {
-    oc: OutputCompare<Ftm0, 0>,
-    ic: InputCapture<Ftm0, 1>,
+    ftm0: Ftm0Parts,
+    ftm1: Ftm1Parts,
+    clocks: Clocks,
     quad: QuadratureDecoder<Ftm2>,
 }
 
@@ -38,23 +41,28 @@ mod tests {
         dp.wdog.disable();
         let clocks = dp.mcg.constrain().freeze(dp.osc, &dp.sim);
 
-        // Create OC and IC on FTM0 — these enable the clock and start the counter
-        let oc = OutputCompare::<Ftm0, 0>::new(
-            CompareAction::Toggle,
-            5000,
-            &clocks,
-            &dp.sim,
-        );
-        let ic = InputCapture::<Ftm0, 1>::new(CaptureEdge::Rising, &clocks, &dp.sim);
+        // Split FTM0 and configure channels
+        let mut ftm0 = dp.ftm0.split(&clocks, &dp.sim);
 
-        // Set FTM0 MOD=0xFFFF so counter runs through full range
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0xFFFF) });
+        // Set MOD=0xFFFF so counter runs through full range
+        ftm0.timer.set_modulo(0xFFFF);
+
+        // Configure ch0 for output compare (toggle at 5000)
+        ftm0.ch0.set_output_compare(CompareAction::Toggle, 5000);
+
+        // Configure ch1 for input capture (rising edge)
+        ftm0.ch1.set_input_capture(CaptureEdge::Rising);
+
+        // Start the counter
+        ftm0.timer.start();
+
+        // Split FTM1 for center-aligned / polarity tests
+        let ftm1 = dp.ftm1.split(&clocks, &dp.sim);
 
         // Create QuadratureDecoder on FTM2 (sets MOD=0xFFFF internally)
         let quad = QuadratureDecoder::<Ftm2>::new(QuadMode::PhaseAB, &dp.sim);
 
-        super::State { oc, ic, quad }
+        super::State { ftm0, ftm1, clocks, quad }
     }
 
     // --- Output Compare tests ---
@@ -69,32 +77,31 @@ mod tests {
         defmt::assert!(!csc.msb().bit(), "MSB should be 0 for output compare");
     }
 
-    /// set_compare(5000) → CnV should read 5000.
+    /// set_value(5000) → CnV should read 5000.
     #[test]
     fn test_oc_set_compare(state: &mut super::State) {
-        state.oc.set_compare(5000);
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
-        let cnv = ftm0.cv(0).read().val().bits();
+        state.ftm0.ch0.set_value(5000);
+        let cnv = state.ftm0.ch0.value();
         defmt::info!("OC CnV: {} (expected 5000)", cnv);
         defmt::assert_eq!(cnv, 5000, "CnV should be 5000");
     }
 
     /// Wait for the counter to wrap past the compare value,
-    /// then has_matched() should return true.
+    /// then has_flag() should return true.
     #[test]
     fn test_oc_match_flag(state: &mut super::State) {
-        state.oc.clear_flag();
-        state.oc.set_compare(100); // Low value so counter reaches it quickly
+        state.ftm0.ch0.clear_flag();
+        state.ftm0.ch0.set_value(100); // Low value so counter reaches it quickly
 
         // Spin until match (at 36 MHz bus clock, counter reaches 100 very fast)
         let mut timeout = 100_000u32;
-        while !state.oc.has_matched() && timeout > 0 {
+        while !state.ftm0.ch0.has_flag() && timeout > 0 {
             timeout -= 1;
         }
 
-        defmt::assert!(state.oc.has_matched(), "OC should have matched");
-        state.oc.clear_flag();
-        state.oc.set_compare(5000); // Restore
+        defmt::assert!(state.ftm0.ch0.has_flag(), "OC should have matched");
+        state.ftm0.ch0.clear_flag();
+        state.ftm0.ch0.set_value(5000); // Restore
     }
 
     /// CHIE bit should toggle with enable/disable_interrupt.
@@ -102,13 +109,13 @@ mod tests {
     fn test_oc_interrupt_control(state: &mut super::State) {
         let ftm0 = unsafe { &*pac::Ftm0::PTR };
 
-        state.oc.enable_interrupt();
+        state.ftm0.ch0.enable_interrupt();
         defmt::assert!(
             ftm0.csc(0).read().chie().bit(),
             "CHIE should be set after enable_interrupt"
         );
 
-        state.oc.disable_interrupt();
+        state.ftm0.ch0.disable_interrupt();
         defmt::assert!(
             !ftm0.csc(0).read().chie().bit(),
             "CHIE should be cleared after disable_interrupt"
@@ -130,8 +137,8 @@ mod tests {
     /// With no signal on the unconnected pin, capture() should return None.
     #[test]
     fn test_ic_no_capture(state: &mut super::State) {
-        state.ic.clear_flag();
-        let result = state.ic.capture();
+        state.ftm0.ch1.clear_flag();
+        let result = state.ftm0.ch1.capture();
         defmt::info!("IC capture on unconnected pin: {:?}", result);
         defmt::assert!(result.is_none(), "No capture expected on unconnected pin");
     }
@@ -141,13 +148,13 @@ mod tests {
     fn test_ic_interrupt_control(state: &mut super::State) {
         let ftm0 = unsafe { &*pac::Ftm0::PTR };
 
-        state.ic.enable_interrupt();
+        state.ftm0.ch1.enable_interrupt();
         defmt::assert!(
             ftm0.csc(1).read().chie().bit(),
             "CHIE should be set after enable_interrupt"
         );
 
-        state.ic.disable_interrupt();
+        state.ftm0.ch1.disable_interrupt();
         defmt::assert!(
             !ftm0.csc(1).read().chie().bit(),
             "CHIE should be cleared after disable_interrupt"
@@ -177,5 +184,80 @@ mod tests {
         let count = state.quad.count();
         defmt::info!("Quad counter: {}", count);
         defmt::assert_eq!(count, 0, "Quadrature counter should be 0 with no input");
+    }
+
+    // --- Center-aligned PWM tests ---
+
+    /// set_alignment(CenterAligned) should set SC.CPWMS=1.
+    #[test]
+    fn test_center_aligned_cpwms_bit(state: &mut super::State) {
+        let ftm1 = unsafe { &*pac::Ftm1::PTR };
+
+        state.ftm1.timer.set_alignment(PwmAlignment::CenterAligned);
+        defmt::assert!(
+            ftm1.sc().read().cpwms().bit(),
+            "CPWMS should be 1 after set_alignment(CenterAligned)"
+        );
+
+        // Verify read-back
+        defmt::assert_eq!(
+            state.ftm1.timer.alignment(),
+            PwmAlignment::CenterAligned,
+            "alignment() should return CenterAligned"
+        );
+
+        // Restore edge-aligned
+        state.ftm1.timer.set_alignment(PwmAlignment::EdgeAligned);
+        defmt::assert!(
+            !ftm1.sc().read().cpwms().bit(),
+            "CPWMS should be 0 after set_alignment(EdgeAligned)"
+        );
+    }
+
+    /// set_frequency() should preserve CPWMS when center-aligned is active.
+    #[test]
+    fn test_center_aligned_preserves_on_set_frequency(state: &mut super::State) {
+        state.ftm1.timer.set_alignment(PwmAlignment::CenterAligned);
+        state.ftm1.timer.set_frequency(1000u32.Hz(), &state.clocks);
+
+        let ftm1 = unsafe { &*pac::Ftm1::PTR };
+        defmt::assert!(
+            ftm1.sc().read().cpwms().bit(),
+            "CPWMS should be preserved after set_frequency()"
+        );
+        defmt::assert_eq!(
+            state.ftm1.timer.alignment(),
+            PwmAlignment::CenterAligned,
+            "alignment() should still be CenterAligned after set_frequency"
+        );
+
+        // Restore edge-aligned
+        state.ftm1.timer.set_alignment(PwmAlignment::EdgeAligned);
+    }
+
+    // --- PWM polarity tests ---
+
+    /// set_pwm_polarity(HighTrue) should set MSB=1, ELSB=1, ELSA=0.
+    #[test]
+    fn test_pwm_polarity_high_true(state: &mut super::State) {
+        state.ftm1.ch0.set_pwm_polarity(PwmPolarity::HighTrue);
+
+        let ftm1 = unsafe { &*pac::Ftm1::PTR };
+        let csc = ftm1.csc(0).read();
+        defmt::assert!(csc.msb().bit(), "MSB should be 1 for PWM");
+        defmt::assert!(csc.elsb().bit(), "ELSB should be 1 for high-true");
+        defmt::assert!(!csc.elsa().bit(), "ELSA should be 0 for high-true");
+    }
+
+    /// set_pwm_polarity(LowTrue) should set MSB=1, ELSB=0, ELSA=1.
+    #[test]
+    fn test_pwm_polarity_low_true(state: &mut super::State) {
+        state.ftm1.ch0.set_pwm_polarity(PwmPolarity::LowTrue);
+
+        let ftm1 = unsafe { &*pac::Ftm1::PTR };
+        let csc = ftm1.csc(0).read();
+        defmt::assert!(csc.msb().bit(), "MSB should be 1 for PWM");
+        defmt::assert!(!csc.elsb().bit(), "ELSB should be 0 for low-true");
+        defmt::assert!(csc.elsa().bit(), "ELSA should be 1 for low-true");
     }
 }

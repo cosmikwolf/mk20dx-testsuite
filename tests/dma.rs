@@ -261,7 +261,7 @@ mod tests {
             54, // ALWAYS_ON0 = slot 54
             "CHCFG source should be ALWAYS_ON0 (54)"
         );
-        defmt::assert!(chcfg.enbl().is_1(), "CHCFG ENBL should be set");
+        defmt::assert!(chcfg.enbl().is_enabled(), "CHCFG ENBL should be set");
     }
 
     /// After set_source + disable_source, ENBL should be 0.
@@ -272,7 +272,7 @@ mod tests {
 
         let dmamux = unsafe { &*pac::Dmamux::PTR };
         let chcfg = dmamux.chcfg(0).read();
-        defmt::assert!(chcfg.enbl().is_0(), "CHCFG ENBL should be cleared after disable");
+        defmt::assert!(chcfg.enbl().is_disabled(), "CHCFG ENBL should be cleared after disable");
     }
 
     /// 32-bit transfer with misaligned source address should set the error flag.
@@ -296,6 +296,8 @@ mod tests {
                 major_loop_count: 1,
                 source_last_adjust: -4,
                 dest_last_adjust: -4,
+                dest_modulo: 0,
+                auto_disable: true,
             });
         }
         state.dma.ch0.start();

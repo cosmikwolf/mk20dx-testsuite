@@ -46,7 +46,7 @@ mod tests {
 
         let mut ftm1 = dp.ftm1.pwm(1000u32.Hz(), &clocks, &dp.sim);
         // Enable ch0 in PWM mode so CnV writes take effect
-        ftm1.ch0.enable();
+        ftm1.ch0.set_pwm();
         super::State { ftm1 }
     }
 

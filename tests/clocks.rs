@@ -53,7 +53,7 @@ mod tests {
         // Verify OUTDIV1 = 0 (divide by 1)
         let sim = unsafe { &*pac::Sim::PTR };
         defmt::assert!(
-            sim.clkdiv1().read().outdiv1().is_0000(),
+            sim.clkdiv1().read().outdiv1().is_div1(),
             "OUTDIV1 should be 0 (divide by 1)"
         );
     }
@@ -71,7 +71,7 @@ mod tests {
         // Verify OUTDIV2 = 1 means divide-by-2 → 72/2 = 36
         let sim = unsafe { &*pac::Sim::PTR };
         defmt::assert!(
-            sim.clkdiv1().read().outdiv2().is_0001(),
+            sim.clkdiv1().read().outdiv2().is_div2(),
             "OUTDIV2 should be 1 (divide by 2)"
         );
     }
@@ -89,7 +89,7 @@ mod tests {
         // Verify OUTDIV4 = 2 means divide-by-3 → 72/3 = 24
         let sim = unsafe { &*pac::Sim::PTR };
         defmt::assert!(
-            sim.clkdiv1().read().outdiv4().is_0010(),
+            sim.clkdiv1().read().outdiv4().is_div3(),
             "OUTDIV4 should be 2 (divide by 3)"
         );
     }
@@ -100,10 +100,10 @@ mod tests {
         let mcg = unsafe { &*pac::Mcg::PTR };
         let s = mcg.s().read();
 
-        defmt::assert!(s.lock0().is_1(), "PLL should be locked (LOCK0=1)");
-        defmt::assert!(s.pllst().is_1(), "PLL should be selected (PLLST=1)");
+        defmt::assert!(s.lock0().is_locked(), "PLL should be locked (LOCK0=1)");
+        defmt::assert!(s.pllst().is_pll(), "PLL should be selected (PLLST=1)");
         defmt::assert!(
-            s.clkst().is_11(),
+            s.clkst().is_pll(),
             "Clock source should be PLL (CLKST=0b11)"
         );
     }

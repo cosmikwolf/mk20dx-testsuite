@@ -19,13 +19,14 @@ use mk20dx_hal as hal;
 use hal::dma::{DmaChannels, DmaExt, DmaSource, TransferConfig, TransferSize};
 use hal::pac;
 use hal::prelude::*;
-use hal::pwm::{CompareAction, Ftm0, Ftm1, OutputCompare, PwmChannel};
+use hal::pwm::{CompareAction, Ftm0Parts, FtmChannel, FtmTimer};
 use embedded_hal::pwm::SetDutyCycle;
 
 struct State {
-    oc: OutputCompare<Ftm0, 0>,
+    ftm0: Ftm0Parts,
     dma: DmaChannels,
-    ftm1_ch0: PwmChannel<Ftm1, 0>,
+    _ftm1_timer: FtmTimer<hal::pwm::Ftm1>,
+    ftm1_ch0: FtmChannel<hal::pwm::Ftm1, 0>,
 }
 
 #[defmt_test::tests]
@@ -38,30 +39,28 @@ mod tests {
         dp.wdog.disable();
         let clocks = dp.mcg.constrain().freeze(dp.osc, &dp.sim);
 
-        // Create OC on FTM0 CH0: Toggle action, compare=100
-        let oc = OutputCompare::<Ftm0, 0>::new(
-            CompareAction::Toggle,
-            100,
-            &clocks,
-            &dp.sim,
-        );
+        // Split FTM0: get timer handle + all channel handles
+        let mut ftm0 = dp.ftm0.split(&clocks, &dp.sim);
 
-        // Set FTM0 MOD=0xFFFF (free-running) and reset CNT
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0xFFFF) });
-        ftm0.cnt().write(|w| unsafe { w.count().bits(0) });
+        // Configure FTM0 for free-running with OC on ch0
+        ftm0.timer.set_modulo(0xFFFF);
+        ftm0.ch0.set_output_compare(CompareAction::Toggle, 100);
+        ftm0.timer.start();
 
-        // Create FTM1 PWM at 10 kHz
-        let mut ftm1 = dp.ftm1.pwm(10_000u32.Hz(), &clocks, &dp.sim);
-        ftm1.ch0.enable();
+        // Split FTM1 and configure for 10 kHz PWM
+        let mut ftm1 = dp.ftm1.split(&clocks, &dp.sim);
+        ftm1.timer.set_frequency(10_000u32.Hz(), &clocks);
+        ftm1.timer.start();
+        ftm1.ch0.set_pwm();
         ftm1.ch0.set_duty_cycle(ftm1.ch0.max_duty_cycle() / 2).unwrap();
 
         // Split DMA channels
         let dma = dp.dma.split(dp.dmamux, &dp.sim);
 
         super::State {
-            oc,
+            ftm0,
             dma,
+            _ftm1_timer: ftm1.timer,
             ftm1_ch0: ftm1.ch0,
         }
     }
@@ -77,14 +76,14 @@ mod tests {
         defmt::assert!(csc.msa().bit(), "MSA should be 1 for output compare");
 
         // Enable DMA
-        state.oc.enable_dma();
+        state.ftm0.ch0.enable_dma();
         let csc = ftm0.csc(0).read();
         defmt::assert!(csc.dma().bit(), "DMA bit should be set after enable_dma");
         defmt::assert!(csc.chie().bit(), "CHIE bit should be set after enable_dma");
         defmt::assert!(csc.msa().bit(), "MSA should be preserved after enable_dma");
 
         // Disable DMA
-        state.oc.disable_dma();
+        state.ftm0.ch0.disable_dma();
         let csc = ftm0.csc(0).read();
         defmt::assert!(!csc.dma().bit(), "DMA bit should be cleared after disable_dma");
         defmt::assert!(!csc.chie().bit(), "CHIE bit should be cleared after disable_dma");
@@ -95,11 +94,9 @@ mod tests {
     /// Uses DMA ch0 with FTM0_CH0 source.
     #[test]
     fn test_oc_dma_single_transfer(state: &mut super::State) {
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
-
-        // Clear any pending channel flag and disable DMA from prior test
-        state.oc.disable_dma();
-        state.oc.clear_flag();
+        // Clean state
+        state.ftm0.ch0.disable_dma();
+        state.ftm0.ch0.clear_flag();
 
         let sentinel: u32 = 0xDEAD_BEEF;
         let mut dest: u32 = 0;
@@ -117,6 +114,8 @@ mod tests {
                 major_loop_count: 1,
                 source_last_adjust: 0,
                 dest_last_adjust: 0,
+                dest_modulo: 0,
+                auto_disable: true,
             });
         }
 
@@ -125,11 +124,11 @@ mod tests {
         state.dma.ch0.enable_request();
 
         // Reset FTM0 counter and set compare=100 for fast match
-        ftm0.cnt().write(|w| unsafe { w.count().bits(0) });
-        state.oc.set_compare(100);
+        state.ftm0.timer.reset_counter();
+        state.ftm0.ch0.set_value(100);
 
         // Enable DMA on the OC channel (arms the FTM→DMA path)
-        state.oc.enable_dma();
+        state.ftm0.ch0.enable_dma();
 
         // Poll for DMA completion with timeout
         let mut timeout = 1_000_000u32;
@@ -138,7 +137,7 @@ mod tests {
         }
 
         // Clean up
-        state.oc.disable_dma();
+        state.ftm0.ch0.disable_dma();
         state.dma.ch0.disable_request();
         compiler_fence(Ordering::SeqCst);
 
@@ -155,11 +154,9 @@ mod tests {
     /// Uses DMA ch1 with FTM0_CH0 source.
     #[test]
     fn test_oc_dma_writes_compare_value(state: &mut super::State) {
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
-
         // Clean state
-        state.oc.disable_dma();
-        state.oc.clear_flag();
+        state.ftm0.ch0.disable_dma();
+        state.ftm0.ch0.clear_flag();
 
         // Buffer of compare values to write to C0V on each match
         let compare_values: [u32; 4] = [2000, 3000, 4000, 5000];
@@ -182,12 +179,14 @@ mod tests {
         state.dma.ch1.enable_request();
 
         // Use short MOD for fast repeated matches
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0x00FF) });
-        ftm0.cnt().write(|w| unsafe { w.count().bits(0) });
-        state.oc.set_compare(0x0080);
+        state.ftm0.timer.stop();
+        state.ftm0.timer.set_modulo(0x00FF);
+        state.ftm0.timer.reset_counter();
+        state.ftm0.ch0.set_value(0x0080);
+        state.ftm0.timer.start();
 
         // Arm FTM→DMA
-        state.oc.enable_dma();
+        state.ftm0.ch0.enable_dma();
 
         // Poll for completion
         let mut timeout = 1_000_000u32;
@@ -196,7 +195,7 @@ mod tests {
         }
 
         // Clean up
-        state.oc.disable_dma();
+        state.ftm0.ch0.disable_dma();
         state.dma.ch1.disable_request();
         compiler_fence(Ordering::SeqCst);
 
@@ -204,12 +203,14 @@ mod tests {
         defmt::assert!(!state.dma.ch1.has_error(), "DMA should have no errors");
 
         // Read C0V — should be last written value (5000)
-        let c0v = ftm0.cv(0).read().val().bits();
+        let c0v = state.ftm0.ch0.value();
         defmt::info!("FTM0 C0V after DMA writes: {} (expected 5000)", c0v);
         defmt::assert_eq!(c0v, 5000, "C0V should be the last DMA-written value");
 
         // Restore MOD for subsequent tests
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0xFFFF) });
+        state.ftm0.timer.stop();
+        state.ftm0.timer.set_modulo(0xFFFF);
+        state.ftm0.timer.start();
         state.dma.ch1.clear_done();
     }
 
@@ -219,11 +220,9 @@ mod tests {
     /// Uses DMA ch2 with FTM0_CH0 source.
     #[test]
     fn test_oc_dma_captures_counter(state: &mut super::State) {
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
-
         // Clean state
-        state.oc.disable_dma();
-        state.oc.clear_flag();
+        state.ftm0.ch0.disable_dma();
+        state.ftm0.ch0.clear_flag();
 
         let mut captures: [u32; 4] = [0; 4];
 
@@ -245,12 +244,14 @@ mod tests {
         state.dma.ch2.enable_request();
 
         // Short MOD + compare for fast repeated matches
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0x00FF) });
-        ftm0.cnt().write(|w| unsafe { w.count().bits(0) });
-        state.oc.set_compare(0x0080);
+        state.ftm0.timer.stop();
+        state.ftm0.timer.set_modulo(0x00FF);
+        state.ftm0.timer.reset_counter();
+        state.ftm0.ch0.set_value(0x0080);
+        state.ftm0.timer.start();
 
         // Arm FTM→DMA
-        state.oc.enable_dma();
+        state.ftm0.ch0.enable_dma();
 
         // Poll for completion
         let mut timeout = 1_000_000u32;
@@ -259,7 +260,7 @@ mod tests {
         }
 
         // Clean up
-        state.oc.disable_dma();
+        state.ftm0.ch0.disable_dma();
         state.dma.ch2.disable_request();
         compiler_fence(Ordering::SeqCst);
 
@@ -276,7 +277,9 @@ mod tests {
         }
 
         // Restore MOD
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0xFFFF) });
+        state.ftm0.timer.stop();
+        state.ftm0.timer.set_modulo(0xFFFF);
+        state.ftm0.timer.start();
         state.dma.ch2.clear_done();
     }
 
@@ -287,6 +290,13 @@ mod tests {
     /// Uses DMA ch3 with FTM1_CH0 source.
     #[test]
     fn test_pwm_dma_duty_update(state: &mut super::State) {
+        let ftm1_regs = unsafe { &*pac::Ftm1::PTR };
+        let dma_regs = unsafe { &*pac::Dma::PTR };
+
+        // Clean state: disable DMA on the channel, clear stale CHF
+        state.ftm1_ch0.disable_dma();
+        state.ftm1_ch0.clear_flag();
+
         // Source buffer (simulated duty values) and destination buffer
         let src: [u32; 4] = [100, 200, 300, 400];
         let mut dst: [u32; 4] = [0; 4];
@@ -305,6 +315,8 @@ mod tests {
                 major_loop_count: 4,
                 source_last_adjust: -16,
                 dest_last_adjust: -16,
+                dest_modulo: 0,
+                auto_disable: true,
             });
         }
 
@@ -312,7 +324,8 @@ mod tests {
         state.dma.ch3.set_source(DmaSource::FTM1_CH0);
         state.dma.ch3.enable_request();
 
-        // Enable DMA on the PWM channel (arms the FTM→DMA path)
+        // Clear CHF then enable DMA on the PWM channel
+        state.ftm1_ch0.clear_flag();
         state.ftm1_ch0.enable_dma();
 
         // Poll for completion
@@ -321,13 +334,24 @@ mod tests {
             timeout -= 1;
         }
 
+        // Capture state for diagnostics
+        let citer = dma_regs.tcd(3).citer_elinkno().read().citer().bits();
+        let has_err = state.dma.ch3.has_error();
+
         // Clean up
         state.ftm1_ch0.disable_dma();
         state.dma.ch3.disable_request();
         compiler_fence(Ordering::SeqCst);
 
+        if timeout == 0 {
+            defmt::info!(
+                "TIMEOUT: CITER={} ERR={} C0SC=0x{:02x}",
+                citer, has_err, ftm1_regs.csc(0).read().bits()
+            );
+        }
+
         defmt::assert!(timeout > 0, "DMA transfer timed out");
-        defmt::assert!(!state.dma.ch3.has_error(), "DMA should have no errors");
+        defmt::assert!(!has_err, "DMA should have no errors");
 
         // Verify all 4 values were transferred by PWM match events
         defmt::info!(
@@ -348,12 +372,11 @@ mod tests {
     /// Uses DMA ch4 with FTM0_CH0 source.
     #[test]
     fn test_citer_reloads_after_completion(state: &mut super::State) {
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
         let dma_regs = unsafe { &*pac::Dma::PTR };
 
         // Clean state
-        state.oc.disable_dma();
-        state.oc.clear_flag();
+        state.ftm0.ch0.disable_dma();
+        state.ftm0.ch0.clear_flag();
 
         let src: [u32; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
         let mut dst: [u32; 4] = [0; 4];
@@ -370,6 +393,8 @@ mod tests {
                 major_loop_count: 4,
                 source_last_adjust: -16,
                 dest_last_adjust: -16,
+                dest_modulo: 0,
+                auto_disable: true,
             });
         }
 
@@ -377,10 +402,12 @@ mod tests {
         state.dma.ch4.enable_request();
 
         // Short MOD for fast matches
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0x00FF) });
-        ftm0.cnt().write(|w| unsafe { w.count().bits(0) });
-        state.oc.set_compare(0x0080);
-        state.oc.enable_dma();
+        state.ftm0.timer.stop();
+        state.ftm0.timer.set_modulo(0x00FF);
+        state.ftm0.timer.reset_counter();
+        state.ftm0.ch0.set_value(0x0080);
+        state.ftm0.timer.start();
+        state.ftm0.ch0.enable_dma();
 
         // Wait for completion
         let mut timeout = 1_000_000u32;
@@ -388,7 +415,7 @@ mod tests {
             timeout -= 1;
         }
 
-        state.oc.disable_dma();
+        state.ftm0.ch0.disable_dma();
         compiler_fence(Ordering::SeqCst);
 
         defmt::assert!(timeout > 0, "DMA transfer timed out");
@@ -414,47 +441,40 @@ mod tests {
         defmt::assert_eq!(dst, [0xAA, 0xBB, 0xCC, 0xDD], "Data should match source");
 
         // Restore
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0xFFFF) });
+        state.ftm0.timer.stop();
+        state.ftm0.timer.set_modulo(0xFFFF);
+        state.ftm0.timer.start();
         state.dma.ch4.clear_done();
     }
 
     /// FTM0 CH7 in PWM mode triggers DMA — mirrors the SK6812 LED driver
-    /// setup. Properly re-initializes FTM0 for CH7 PWM by stopping the
-    /// counter first (CLKS=00), which ensures MOD/CnV writes take effect
-    /// immediately instead of going to a write buffer.
+    /// setup. Uses the split API to configure CH7 for PWM with a short
+    /// period for fast DMA triggers.
     /// Uses DMA ch5 with FTM0_CH7 source.
     #[test]
     fn test_ftm0_ch7_pwm_dma(state: &mut super::State) {
-        let ftm0 = unsafe { &*pac::Ftm0::PTR };
+        let ftm0_regs = unsafe { &*pac::Ftm0::PTR };
         let dma_regs = unsafe { &*pac::Dma::PTR };
 
-        // ---- Re-initialize FTM0 for CH7 PWM ----
-        // Key: stop counter FIRST so MOD/CnV writes take effect immediately.
-        // In legacy mode (FTMEN=0) with counter running, MOD/CnV writes go
-        // to a write buffer and only transfer on counter rollover. With the
-        // counter stopped (CLKS=00), writes go directly to the active register.
+        // ---- Re-initialize FTM0 for CH7 PWM via split API ----
+        // Stop counter so MOD/CnV writes take effect immediately
+        state.ftm0.timer.stop();
 
-        // 1. Stop counter
-        ftm0.sc().modify(|_, w| w.clks().none());
+        // Set MOD for a short period (fast DMA triggers)
+        state.ftm0.timer.set_modulo(0x00FF);
 
-        // 2. Disable write protection
-        ftm0.mode().modify(|_, w| w.wpdis()._1());
+        // Configure CH7 for edge-aligned PWM
+        state.ftm0.ch7.set_pwm();
 
-        // 3. Set MOD for a short period (fast DMA triggers)
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0x00FF) });
+        // Set CnV=1 (non-zero so CHF fires; CnV=0=CNTIN suppresses match)
+        state.ftm0.ch7.set_value(1);
 
-        // 4. Configure CH7 for edge-aligned PWM: MSB=1, ELSB=1
-        ftm0.csc(7).write(|w| w.msb().set_bit().elsb().set_bit());
+        // Reset counter
+        state.ftm0.timer.reset_counter();
 
-        // 5. Set CnV=1 (non-zero so CHF fires; CnV=0=CNTIN suppresses match)
-        ftm0.cv(7).write(|w| unsafe { w.val().bits(1) });
-
-        // 6. Reset counter
-        ftm0.cnt().write(|w| unsafe { w.count().bits(0) });
-
-        // Verify writes took effect (should be immediate with CLKS=00)
-        let mod_val = ftm0.mod_().read().mod_().bits();
-        let cv_val = ftm0.cv(7).read().val().bits();
+        // Verify writes took effect (should be immediate with counter stopped)
+        let mod_val = state.ftm0.timer.modulo();
+        let cv_val = state.ftm0.ch7.value();
         defmt::info!(
             "After init (counter stopped): MOD={} CnV={} (want 255, 1)",
             mod_val, cv_val
@@ -462,16 +482,13 @@ mod tests {
         defmt::assert_eq!(mod_val, 0x00FF, "MOD should be 0xFF with counter stopped");
         defmt::assert_eq!(cv_val, 1, "CnV should be 1 with counter stopped");
 
-        // 7. Restart counter
-        ftm0.sc().modify(|_, w| w.clks().system());
+        // Restart counter
+        state.ftm0.timer.start();
 
         // Verify CHF fires before involving DMA
-        // Clear CHF by read-then-write-0
-        ftm0.csc(7).modify(|_, w| w);
+        state.ftm0.ch7.clear_flag();
         cortex_m::asm::delay(720); // ~10 µs = many periods at MOD=0xFF
-        let chf = ftm0.csc(7).read().chf().is_1();
-        defmt::info!("CHF after restart: {} (should be true)", chf);
-        defmt::assert!(chf, "CH7 match flag should fire with CnV=1, MOD=0xFF");
+        defmt::assert!(state.ftm0.ch7.has_flag(), "CH7 match flag should fire with CnV=1, MOD=0xFF");
 
         // ---- DMA transfer ----
         let src: [u16; 8] = [10, 21, 10, 21, 10, 21, 10, 1];
@@ -490,15 +507,17 @@ mod tests {
                 major_loop_count: 8,
                 source_last_adjust: -16,
                 dest_last_adjust: -16,
+                dest_modulo: 0,
+                auto_disable: true,
             });
         }
 
         state.dma.ch5.set_source(DmaSource::FTM0_CH7);
         state.dma.ch5.enable_request();
 
-        // Clear CHF then enable DMA on CH7 (DMA=1 + CHIE=1, preserve PWM mode)
-        ftm0.csc(7).modify(|_, w| w);
-        ftm0.csc(7).modify(|_, w| w.dma()._1().chie()._1());
+        // Clear CHF then enable DMA on CH7
+        state.ftm0.ch7.clear_flag();
+        state.ftm0.ch7.enable_dma();
 
         // Poll for completion
         let mut timeout = 1_000_000u32;
@@ -511,14 +530,14 @@ mod tests {
         let has_err = state.dma.ch5.has_error();
 
         // Clean up: disable DMA on CH7, restore FTM0 for OC tests
-        ftm0.csc(7).modify(|_, w| w.dma()._0().chie()._0());
+        state.ftm0.ch7.disable_dma();
         state.dma.ch5.disable_request();
         compiler_fence(Ordering::SeqCst);
 
         if timeout == 0 {
             defmt::info!(
                 "TIMEOUT: CITER={} ERR={} C7SC=0x{:02x}",
-                citer, has_err, ftm0.csc(7).read().bits()
+                citer, has_err, ftm0_regs.csc(7).read().bits()
             );
         }
 
@@ -536,9 +555,9 @@ mod tests {
         );
 
         // Restore MOD for any subsequent use
-        ftm0.sc().modify(|_, w| w.clks().none());
-        ftm0.mod_().write(|w| unsafe { w.mod_().bits(0xFFFF) });
-        ftm0.sc().modify(|_, w| w.clks().system());
+        state.ftm0.timer.stop();
+        state.ftm0.timer.set_modulo(0xFFFF);
+        state.ftm0.timer.start();
         state.dma.ch5.clear_done();
     }
 }

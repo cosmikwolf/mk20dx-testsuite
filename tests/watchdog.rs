@@ -34,7 +34,7 @@ mod tests {
         let wdog = unsafe { &*pac::Wdog::PTR };
         let stctrlh = wdog.stctrlh().read();
         defmt::assert!(
-            stctrlh.wdogen().is_0(),
+            stctrlh.wdogen().is_disabled(),
             "WDOGEN should be 0 after disable"
         );
     }
