@@ -1,5 +1,7 @@
 [target.thumbv7em-none-eabi]
-runner = "probe-rs run --chip MK20DX256xxx7 --chip-description-path ../mk20dx-hal/resources/K20_Series.yaml"
+# --connect-under-reset is required: without it the Kinetis SWD link drops
+# partway through the flash erase, usually around 0x0000b000.
+runner = "probe-rs run --chip MK20DX256xxx7 --chip-description-path ../mk20dx-hal/resources/K20_Series.yaml --connect-under-reset"
 # runner = "./jlink-runner.sh"
 
 [build]
