@@ -1,7 +1,8 @@
 //! SPI baud rate calculation property-based tests.
 //!
 //! Tests spi::calc_baud with random inputs to verify index ranges,
-//! rate-not-exceeding-target, and optimality. No hardware wiring needed.
+//! rate-not-exceeding-target, and optimality, and spi::pack_pushr field
+//! placement. No hardware wiring needed.
 //!
 //! Priority: MEDIUM
 //! Wiring: None
@@ -22,7 +23,7 @@ static HEAP: Heap = Heap::empty();
 use mk20dx_hal as hal;
 use hal::pac;
 use hal::prelude::*;
-use hal::spi::{calc_baud, BR_SCALERS, PBR_PRESCALERS};
+use hal::spi::{calc_baud, pack_pushr, BR_SCALERS, PBR_PRESCALERS};
 
 struct State {}
 
@@ -163,6 +164,67 @@ mod tests {
             Ok(()) => defmt::info!("optimality: PASSED (16 cases)"),
             Err(e) => {
                 defmt::error!("optimality FAILED: {}", e);
+                defmt::assert!(false, "Property test failed");
+            }
+        }
+    }
+
+    /// pack_pushr places every field where the DSPI PUSHR layout says it goes.
+    ///
+    /// PUSHR: [31] CONT, [30:28] CTAS, [27] EOQ, [26] CTCNT, [21:16] PCS, [15:0] TXDATA.
+    /// `read_dma` builds its dummy word with this, so a misplaced field would
+    /// clock the wrong data for a whole transfer.
+    #[test]
+    fn test_pack_pushr_field_placement(_state: &mut super::State) {
+        // One field at a time, everything else zero.
+        defmt::assert_eq!(pack_pushr(0xA5, 0, false, false), 0x0000_00A5);
+        defmt::assert_eq!(pack_pushr(0xBEEF, 0, false, false), 0x0000_BEEF);
+        defmt::assert_eq!(pack_pushr(0, 0x01, false, false), 0x0001_0000);
+        defmt::assert_eq!(pack_pushr(0, 0x3F, false, false), 0x003F_0000);
+        defmt::assert_eq!(pack_pushr(0, 0, true, false), 0x8000_0000);
+        defmt::assert_eq!(pack_pushr(0, 0, false, true), 0x0800_0000);
+
+        // CTAS and CTCNT are hardcoded to 0, so those bits stay clear.
+        defmt::assert_eq!(pack_pushr(0xFFFF, 0x3F, true, true) & 0x7400_0000, 0);
+
+        // The AD5676 framing FLXS1 uses: PCS0 held low across two bytes.
+        defmt::assert_eq!(pack_pushr(0x12, 1, true, false), 0x8001_0012);
+        defmt::assert_eq!(pack_pushr(0x12, 1, false, false), 0x0001_0012);
+
+        defmt::info!("pack_pushr field placement: PASSED");
+    }
+
+    /// PCS is a 6-bit field; pack_pushr must mask, not overflow into CTCNT.
+    #[test]
+    fn test_pack_pushr_masks_pcs(_state: &mut super::State) {
+        let config = Config::with_cases(64);
+        let mut runner = TestRunner::new(config);
+
+        let strategy = (0u16..=0xFFFF, 0u8..=0xFF);
+
+        let result = runner.run(&strategy, |(data, pcs)| {
+            let word = pack_pushr(data, pcs, false, false);
+
+            proptest::prop_assert_eq!(
+                word & 0x0000_FFFF, data as u32,
+                "txdata corrupted for data={}, pcs={}", data, pcs
+            );
+            proptest::prop_assert_eq!(
+                (word >> 16) & 0x3F, (pcs & 0x3F) as u32,
+                "pcs mismatch for data={}, pcs={}", data, pcs
+            );
+            proptest::prop_assert_eq!(
+                word & 0xFFC0_0000, 0,
+                "pcs {} overflowed past bit 21 (word {})", pcs, word
+            );
+
+            Ok(())
+        });
+
+        match result {
+            Ok(()) => defmt::info!("pack_pushr pcs masking: PASSED (64 cases)"),
+            Err(e) => {
+                defmt::error!("pack_pushr pcs masking FAILED: {}", e);
                 defmt::assert!(false, "Property test failed");
             }
         }

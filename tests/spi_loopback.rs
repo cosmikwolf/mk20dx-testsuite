@@ -18,11 +18,13 @@ use embedded_hal::spi::SpiBus;
 use mk20dx_hal as hal;
 use hal::pac;
 use hal::prelude::*;
-use hal::spi::{Config, Spi, Spi0, SpiExt, MODE_0};
+use hal::dma::{DmaChannels, DmaExt};
+use hal::spi::{pack_pushr, Config, Spi, Spi0, SpiExt, MODE_0};
 use hal::time::U32Ext;
 
 struct State {
     spi: Spi<Spi0>,
+    dma: DmaChannels,
 }
 
 #[defmt_test::tests]
@@ -47,8 +49,9 @@ mod tests {
 
         let config = Config::new(1_000_000u32.Hz()).mode(MODE_0);
         let spi = dp.spi0.spi(sck, mosi, miso, config, &clocks, &dp.sim);
+        let dma = dp.dma.split(dp.dmamux, &dp.sim);
 
-        super::State { spi }
+        super::State { spi, dma }
     }
 
     /// Transfer 1 byte (0xA5) in-place — loopback should return the same byte.
@@ -138,5 +141,85 @@ mod tests {
             verify[0], 0xCD,
             "SPI bus should be functional after flush()"
         );
+    }
+
+    /// read_dma over the loopback wire: every captured byte must equal the
+    /// dummy byte that TX replayed.
+    ///
+    /// A non-zero dummy is what gives this test teeth. With 0x00 it would pass
+    /// even if the RX DMA read the wrong byte lane off POPR, since POPR reads
+    /// as 0 when nothing arrived.
+    #[test]
+    fn test_read_dma_loopback(state: &mut super::State) {
+        let dummy = pack_pushr(0xA5, 0, false, false);
+        let mut buf = [0u8; 64];
+
+        let xfer = state
+            .spi
+            .read_dma(&mut buf, &mut state.dma.ch0, &mut state.dma.ch1, &dummy);
+        xfer.wait().unwrap();
+
+        state.spi.disable_dma_requests();
+        state.spi.flush_fifos();
+        state.spi.clear_status();
+
+        for (i, &b) in buf.iter().enumerate() {
+            defmt::assert_eq!(b, 0xA5, "byte {} was {}, expected 0xA5", i, b);
+        }
+        defmt::info!("read_dma loopback: PASSED (64 bytes)");
+    }
+
+    /// A longer read crosses many minor loops and a full TX/RX FIFO cycle.
+    #[test]
+    fn test_read_dma_long(state: &mut super::State) {
+        let dummy = pack_pushr(0x5A, 0, false, false);
+        let mut buf = [0u8; 256];
+
+        let xfer = state
+            .spi
+            .read_dma(&mut buf, &mut state.dma.ch0, &mut state.dma.ch1, &dummy);
+        xfer.wait().unwrap();
+
+        state.spi.disable_dma_requests();
+        state.spi.flush_fifos();
+        state.spi.clear_status();
+
+        defmt::assert!(buf.iter().all(|&b| b == 0x5A), "long read mismatched");
+        defmt::info!("read_dma long: PASSED (256 bytes)");
+    }
+
+    /// read_dma must fill exactly `buf.len()` bytes and not one more.
+    #[test]
+    fn test_read_dma_no_overrun(state: &mut super::State) {
+        let dummy = pack_pushr(0x3C, 0, false, false);
+        let mut backing = [0u8; 17];
+        backing[16] = 0xEE; // sentinel past the end of the read
+
+        {
+            let (head, _tail) = backing.split_at_mut(16);
+            let xfer = state
+                .spi
+                .read_dma(head, &mut state.dma.ch0, &mut state.dma.ch1, &dummy);
+            xfer.wait().unwrap();
+        }
+
+        state.spi.disable_dma_requests();
+        state.spi.flush_fifos();
+        state.spi.clear_status();
+
+        defmt::assert!(
+            backing[..16].iter().all(|&b| b == 0x3C),
+            "first 16 bytes should all be 0x3C"
+        );
+        defmt::assert_eq!(backing[16], 0xEE, "read_dma wrote past the buffer");
+        defmt::info!("read_dma no overrun: PASSED");
+    }
+
+    /// The bus must still work for byte transfers after a DMA read.
+    #[test]
+    fn test_transfer_after_read_dma(state: &mut super::State) {
+        let mut verify = [0x7Eu8];
+        state.spi.transfer_in_place(&mut verify).unwrap();
+        defmt::assert_eq!(verify[0], 0x7E, "SPI bus should work after read_dma");
     }
 }
