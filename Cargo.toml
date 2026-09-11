@@ -43,6 +43,21 @@ opt-level = 2
 name = "hello"
 test = false
 
+# Minimal deterministic target for probe-rs debug sequence testing
+[[bin]]
+name = "bench"
+test = false
+
+# Same, but leaves the WDOG enabled and feeds it - tests the attach-path WDOG gap
+[[bin]]
+name = "bench_wdog"
+test = false
+
+# bench plus a delay before the WDOG disable - reproduces the WCT reset loop (RM §23.3.2)
+[[bin]]
+name = "bench_wct"
+test = false
+
 # Self-test binaries (no external wiring)
 [[test]]
 name = "watchdog"
