@@ -10,6 +10,7 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt as _;
 use defmt_rtt as _;
 use panic_probe as _;
 
@@ -40,7 +41,7 @@ mod tests {
     #[test]
     fn test_core_clk_120mhz(state: &mut super::State) {
         defmt::assert_eq!(
-            state.clocks.core_clk().raw(),
+            state.clocks.core_clk().to_raw(),
             120_000_000,
             "Core clock should be 120 MHz"
         );
@@ -63,7 +64,7 @@ mod tests {
     #[test]
     fn test_bus_clk_60mhz(state: &mut super::State) {
         defmt::assert_eq!(
-            state.clocks.bus_clk().raw(),
+            state.clocks.bus_clk().to_raw(),
             60_000_000,
             "Bus clock should be 60 MHz"
         );
@@ -77,7 +78,7 @@ mod tests {
     #[test]
     fn test_flash_clk_24mhz(state: &mut super::State) {
         defmt::assert_eq!(
-            state.clocks.flash_clk().raw(),
+            state.clocks.flash_clk().to_raw(),
             24_000_000,
             "Flash clock should be 24 MHz"
         );

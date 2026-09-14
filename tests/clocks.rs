@@ -6,6 +6,7 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt as _;
 use defmt_rtt as _;
 use panic_probe as _;
 
@@ -37,7 +38,7 @@ mod tests {
     fn test_core_clk_72mhz(state: &mut super::State) {
         // Verify Clocks struct reports correct frequency
         defmt::assert_eq!(
-            state.clocks.core_clk().raw(),
+            state.clocks.core_clk().to_raw(),
             72_000_000,
             "Core clock should be 72 MHz"
         );
@@ -63,7 +64,7 @@ mod tests {
     #[test]
     fn test_bus_clk_36mhz(state: &mut super::State) {
         defmt::assert_eq!(
-            state.clocks.bus_clk().raw(),
+            state.clocks.bus_clk().to_raw(),
             36_000_000,
             "Bus clock should be 36 MHz"
         );
@@ -81,7 +82,7 @@ mod tests {
     #[test]
     fn test_flash_clk_24mhz(state: &mut super::State) {
         defmt::assert_eq!(
-            state.clocks.flash_clk().raw(),
+            state.clocks.flash_clk().to_raw(),
             24_000_000,
             "Flash clock should be 24 MHz"
         );

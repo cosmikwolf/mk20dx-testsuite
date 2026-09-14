@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+use cortex_m_rt as _;
 use defmt_rtt as _;
 use panic_probe as _;
 

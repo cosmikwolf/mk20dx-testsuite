@@ -11,6 +11,7 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt as _;
 use defmt_rtt as _;
 use panic_probe as _;
 
@@ -123,20 +124,66 @@ mod tests {
         );
     }
 
-    /// Set alarm to current+2, wait 2.5s, alarm_fired() should be true.
+    /// Set an alarm two seconds out and confirm it fires.
+    ///
+    /// Synchronises to a second boundary before arming, then polls.
+    ///
+    /// The old form armed `now + 2`, slept a flat 2.5 s and sampled once, and
+    /// failed intermittently on identical binaries. Two things were wrong.
+    ///
+    /// First, a `now + 2` alarm takes **three** seconds, not two: TAF is set
+    /// when TSR matches TAR and then increments (K20 RM ch.36), so it asserts
+    /// as TSR becomes `TAR + 1`. Measured directly — armed at TSR=1700000003
+    /// for TAR=1700000005, TAF set at TSR=1700000006. The 2.5 s budget was
+    /// therefore below the real latency. It is not a timebase error: the
+    /// prescaler measures 16386 counts per 500 ms against a 16384 ideal.
+    ///
+    /// Second, `seconds()` was read at whatever sub-second phase the previous
+    /// test left, so how much of the current second had already elapsed
+    /// decided whether the too-short budget happened to be enough.
+    ///
+    /// Waiting for a tick pins the phase near zero, and polling to a 4 s
+    /// bound covers the real 3 s latency while still catching a stuck alarm.
     #[test]
     fn test_alarm_fires(state: &mut super::State) {
         if !state.osc_running {
             defmt::warn!("SKIPPED: oscillator not running");
             return;
         }
+
+        // Align to a second boundary so the alarm is armed at a known phase.
+        let start = state.rtc.seconds().unwrap();
+        let mut spins = 0u32;
+        while state.rtc.seconds().unwrap() == start {
+            state.delay.delay_ms(10);
+            spins += 1;
+            defmt::assert!(spins < 200, "RTC counter did not tick within 2s");
+        }
+
         let now = state.rtc.seconds().unwrap();
         state.rtc.set_alarm(now + 2);
-        state.delay.delay_ms(2500);
+
+        // Poll rather than sleeping a fixed span and sampling once. The alarm
+        // is due in 2 s; allow 4 s before calling it a failure.
+        let mut waited_ms = 0u32;
+        while !state.rtc.alarm_fired() && waited_ms < 4000 {
+            state.delay.delay_ms(10);
+            waited_ms += 10;
+        }
 
         let fired = state.rtc.alarm_fired();
-        defmt::info!("Alarm set for {}, fired: {}", now + 2, fired);
-        defmt::assert!(fired, "Alarm should have fired after 2.5s wait");
+        defmt::info!(
+            "Alarm armed at {} for {}, fired: {} after {}ms",
+            now,
+            now + 2,
+            fired,
+            waited_ms
+        );
+        defmt::assert!(
+            fired,
+            "Alarm set for now+2 did not fire within 4s (waited {}ms)",
+            waited_ms
+        );
     }
 
     /// clear_alarm() should clear the alarm flag.

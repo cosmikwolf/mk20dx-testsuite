@@ -13,6 +13,7 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt as _;
 use defmt_rtt as _;
 use panic_probe as _;
 
@@ -36,8 +37,8 @@ mod tests {
     fn init() -> super::State {
         let dp = pac::Peripherals::take().unwrap();
         dp.wdog.disable();
-        let _clocks = dp.mcg.constrain().freeze(dp.osc, &dp.sim);
-        let usb_bus = dp.usb0.usb_bus(&dp.sim);
+        let clocks = dp.mcg.constrain().freeze(dp.osc, &dp.sim);
+        let usb_bus = dp.usb0.usb_bus(&dp.sim, &clocks);
         super::State { usb_bus }
     }
 
