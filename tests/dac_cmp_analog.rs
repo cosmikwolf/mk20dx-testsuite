@@ -55,14 +55,14 @@ mod tests {
         let _clocks = dp.mcg.constrain().freeze(dp.osc, &dp.sim);
 
         let mut dac = dp.dac0.dac(&dp.sim);
-        dac.set_vref(VrefSource::Vref1); // VDDA
+        dac.set_vref(VrefSource::Vref2); // DACREF_2 = VDDA
         dac.set_value(0);
         dac.enable();
 
         // Plus = IN3, the 12-bit DAC output. Minus = IN7, the 6-bit reference.
         // COUT is then "the 12-bit DAC is above the reference".
         let mut cmp = dp.cmp1.cmp(Input::IN3, Input::INTERNAL_DAC, &dp.sim);
-        cmp.set_internal_dac(REF_LEVEL, CmpDacVref::Vin1);
+        cmp.set_internal_dac(REF_LEVEL, CmpDacVref::Vin2);
         cmp.enable();
         settle();
 
@@ -158,18 +158,18 @@ mod tests {
     #[test]
     fn test_reference_level_moves_the_threshold(state: &mut super::State) {
         // A low reference: the DAC should already be above it at a quarter scale.
-        state.cmp.set_internal_dac(7, CmpDacVref::Vin1); // 8/64 of VDDA
+        state.cmp.set_internal_dac(7, CmpDacVref::Vin2); // 8/64 of VDDA
         state.dac.set_value(1024); // about a quarter of full scale
         settle();
         let above_low_ref = state.cmp.output();
 
         // A high reference: the same DAC code should now be below it.
-        state.cmp.set_internal_dac(55, CmpDacVref::Vin1); // 56/64 of VDDA
+        state.cmp.set_internal_dac(55, CmpDacVref::Vin2); // 56/64 of VDDA
         settle();
         let above_high_ref = state.cmp.output();
 
         // Put it back for any test that runs after this one.
-        state.cmp.set_internal_dac(REF_LEVEL, CmpDacVref::Vin1);
+        state.cmp.set_internal_dac(REF_LEVEL, CmpDacVref::Vin2);
         settle();
 
         defmt::info!(
