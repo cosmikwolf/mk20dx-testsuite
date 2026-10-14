@@ -8,6 +8,8 @@ license = "MIT OR Apache-2.0"
 # `cargo test` runs only what a bare board can pass.
 [features]
 loopback = []
+# Tests that need the Teensy USB port cabled to the host.
+usb-host = []
 
 [dependencies]
 mk20dx-hal = { path = "../mk20dx-hal", features = ["mk20d7", "rt", "critical-section", "defmt", "async"] }
@@ -28,6 +30,7 @@ embedded-storage = "0.3"
 defmt-test = "0.5"
 proptest = { git = "https://github.com/cosmikwolf/proptest.git", branch = "feat/defmt-format", default-features = false, features = ["no_std", "alloc", "defmt"] }
 embedded-alloc = "0.7"
+usbd-midi = "0.5"
 
 # Optimize dependencies in debug builds — critical for timing-sensitive
 # peripheral sequences like the WDOG unlock (20 bus cycle window).
@@ -172,3 +175,9 @@ required-features = ["loopback"]
 name = "ftm_combined_loopback"
 harness = false
 required-features = ["loopback"]
+
+# Host-connected test binaries (Teensy USB port to the host)
+[[test]]
+name = "usb_irq"
+harness = false
+required-features = ["usb-host"]
