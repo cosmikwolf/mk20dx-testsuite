@@ -24,6 +24,10 @@ def main() -> int:
 
     deadline = time.monotonic() + args.timeout
 
+    # A CoreMIDI client sees a device that appears after it was made only
+    # while its CFRunLoop runs, and this script runs none. This works because
+    # mido makes a new rtmidi client on each get_output_names() call. A host
+    # tool that keeps one client must pump the run loop while it waits.
     def ports():
         return [n for n in mido.get_output_names() if PORT_NAME in n]
 
