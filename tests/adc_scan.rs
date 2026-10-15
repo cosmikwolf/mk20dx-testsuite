@@ -13,6 +13,9 @@
 //! Regression: in 0.2.1 the scan ignored the PDB modulus (see
 //! `test_rate_follows_pdb_modulus`).
 //!
+//! Regression: in 0.2.1 the scan wrote SC3 = 0 and dropped the averaging
+//! from `set_averaging()` (see `test_averaging_*`).
+//!
 //! Setup as on the FLXS1: ADC1, PDB0, DMA-A = ch4, DMA-B = ch5.
 //!
 //! Priority: HIGH
@@ -26,7 +29,7 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use mk20dx_hal as hal;
-use hal::adc::{Adc, Adc1, AdcExt, ScanConfig};
+use hal::adc::{Adc, Adc1, AdcExt, Averaging, ScanConfig};
 use hal::dma::{DmaChannel, DmaExt};
 use hal::pac;
 use hal::pdb::{Multiplier, Pdb, PdbExt, Prescaler};
@@ -69,6 +72,40 @@ fn cycles() -> u32 {
         ctrl.write_volatile(ctrl.read_volatile() | 1);
         (0xE000_1004 as *const u32).read_volatile()
     }
+}
+
+/// Run a 4-channel scan for 100 ms. Returns the results counted from DMA-A
+/// CITER (sampled in a tight loop), PDB MOD, and ADC1 SC3 during the scan.
+fn measure_rate(state: &mut State) -> (u32, u32, u32) {
+    static CH: [u8; 4] = [VREFSH, VREFSL, VREFSL, VREFSL];
+    let config = ScanConfig {
+        channels: &CH,
+        modulus: MODULUS,
+        prescaler: Prescaler::Div1,
+        multiplier: Multiplier::Mult1,
+    };
+    let mut results = [0u16; 4];
+    let mut mux_buf = [0u32; 4];
+    let scan = state.adc.start_multi_channel_scan(
+        &config, &mut results, &mut mux_buf,
+        &mut state.dma_a, &mut state.dma_b, &mut state.pdb,
+    );
+    // SAFETY: read-only register access while the scan owns the peripherals.
+    let pdb = unsafe { &*pac::Pdb0::PTR };
+    let adc = unsafe { &*pac::Adc1::PTR };
+    let sc3 = adc.sc3().read().bits();
+    let t0 = cycles();
+    let mut last = dma_a_citer();
+    let mut count = 0u32;
+    while cycles().wrapping_sub(t0) < 72_000 * 100 {
+        let c = dma_a_citer();
+        count += ((last + 4 - c) % 4) as u32;
+        last = c;
+    }
+    let modulus = pdb.mod_().read().bits();
+    drop(scan);
+    defmt::info!("results in 100 ms: {}; PDB MOD={}, SC3=0x{:02x}", count, modulus, sc3);
+    (count, modulus, sc3)
 }
 
 /// Run the scan over `channels` and check that each slot keeps its channel.
@@ -159,43 +196,46 @@ mod tests {
     /// value 0xFFFF and every scan ran at 36 MHz / 65536 = 549 Hz.
     #[test]
     fn test_rate_follows_pdb_modulus(state: &mut super::State) {
-        static CH: [u8; 4] = [VREFSH, VREFSL, VREFSL, VREFSL];
-        let config = ScanConfig {
-            channels: &CH,
-            modulus: MODULUS,
-            prescaler: Prescaler::Div1,
-            multiplier: Multiplier::Mult1,
-        };
-        let mut results = [0u16; 4];
-        let mut mux_buf = [0u32; 4];
-        let scan = state.adc.start_multi_channel_scan(
-            &config, &mut results, &mut mux_buf,
-            &mut state.dma_a, &mut state.dma_b, &mut state.pdb,
-        );
-        let pdb = unsafe { &*pac::Pdb0::PTR };
-        let t0 = cycles();
-        let mut last = dma_a_citer();
-        let mut count = 0u32;
-        let mut cnt_min = u16::MAX;
-        let mut cnt_max = 0u16;
-        while cycles().wrapping_sub(t0) < 72_000 * 100 {
-            let c = dma_a_citer();
-            count += ((last + 4 - c) % 4) as u32;
-            last = c;
-            let k = pdb.cnt().read().bits() as u16;
-            cnt_min = cnt_min.min(k);
-            cnt_max = cnt_max.max(k);
-        }
-        let modulus = pdb.mod_().read().bits();
-        drop(scan);
-        defmt::info!(
-            "results in 100 ms: {}; PDB MOD={} CNT {}..{}",
-            count, modulus, cnt_min, cnt_max
-        );
+        let (count, modulus, sc3) = measure_rate(state);
         defmt::assert_eq!(modulus, MODULUS as u32, "PDB MOD did not load");
+        defmt::assert_eq!(sc3 & 0b1111, 0, "no averaging, no ADCO expected");
         defmt::assert!(
             (900..=1100).contains(&count),
             "expected about 1000 results in 100 ms, got {}",
+            count
+        );
+    }
+
+    /// The scan keeps the averaging from `set_averaging()` (0.2.1 wrote
+    /// SC3 = 0). 4 samples (about 50 µs) fit in the 100 µs PDB slot, so the
+    /// rate and the slot map do not change.
+    #[test]
+    fn test_averaging_4_kept(state: &mut super::State) {
+        state.adc.set_averaging(Averaging::Avg4);
+        let (count, _, sc3) = measure_rate(state);
+        defmt::assert_eq!(sc3 & 0b1111, 0b0100, "SC3 AVGE=1 AVGS=00 (4 samples), ADCO=0");
+        defmt::assert!((900..=1100).contains(&count), "Avg4: got {} results in 100 ms", count);
+        check_slots(state, &[VREFSL, VREFSL, VREFSL, VREFSH]);
+        check_slots(state, &[VREFSL, VREFSH, VREFSL, VREFSL, VREFSL]);
+        state.adc.set_averaging(Averaging::Disabled);
+    }
+
+    /// Proof that the hardware really averages during a scan: 32 samples
+    /// (about 400 µs) do not fit in a 100 µs slot. The next trigger comes
+    /// while the conversion runs, the PDB sets a sequence error, and the
+    /// scan stops after the first result. A new scan must clear the error
+    /// and run again (in 0.2.1 a sequence error blocked every later scan).
+    #[test]
+    fn test_averaging_32_overrun_then_restart(state: &mut super::State) {
+        state.adc.set_averaging(Averaging::Avg32);
+        let (count, _, sc3) = measure_rate(state);
+        state.adc.set_averaging(Averaging::Disabled);
+        defmt::assert_eq!(sc3 & 0b1111, 0b0111, "SC3 AVGE=1 AVGS=11 (32 samples)");
+        defmt::assert!(count < 500, "Avg32 should not keep up with 10 kHz, got {}", count);
+        let (count, _, _) = measure_rate(state);
+        defmt::assert!(
+            (900..=1100).contains(&count),
+            "restart after a sequence error: got {} results in 100 ms",
             count
         );
     }
