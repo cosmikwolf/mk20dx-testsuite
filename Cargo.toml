@@ -79,6 +79,10 @@ harness = false
 [[test]]
 name = "adc"
 harness = false
+
+[[test]]
+name = "adc_scan"
+harness = false
 [[test]]
 name = "dma"
 harness = false
