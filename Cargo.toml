@@ -153,6 +153,9 @@ harness = false
 [[test]]
 name = "spi"
 harness = false
+[[test]]
+name = "spi_baud"
+harness = false
 
 # Loopback test binaries (require wiring)
 [[test]]
