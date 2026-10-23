@@ -83,6 +83,18 @@ mod tests {
         defmt::assert_eq!(unsafe { &*pac::Spi0::PTR }.spi0_ctar(0).read().bits(), ctar);
     }
 
+    /// One 8-bit frame at 15 MHz (PBR /2, BR /2) with the init's minimum
+    /// delays (each 1 x 2^1) is 8 x 4 + 3 x 2 = 38 bus cycles; at 30 MHz
+    /// (DBR) 8 x 2 + 6 = 22; at 10 MHz (PBR /2, BR /6, DBR) 8 x 6 + 6 = 54.
+    #[test]
+    fn frame_bus_cycles_at_board_rates(_state: &mut super::State) {
+        let min = [(0u8, 0u8); 3];
+        defmt::assert_eq!(hal::spi::frame_bus_cycles(8, 0, 0, false, min), 38);
+        defmt::assert_eq!(hal::spi::frame_bus_cycles(8, 0, 0, true, min), 22);
+        defmt::assert_eq!(hal::spi::frame_bus_cycles(8, 2, 0, true, min), 54);
+        defmt::assert_eq!(hal::spi::frame_bus_cycles(8, 0, 3, false, [(3, 2), (0, 0), (0, 0)]), 8 * 14 + 7 * 8 + 4);
+    }
+
     /// `rate` agrees with `calc_baud` for the board's three rates.
     #[test]
     fn rates_at_60_mhz(_state: &mut super::State) {
