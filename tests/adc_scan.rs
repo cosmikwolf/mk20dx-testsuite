@@ -16,6 +16,10 @@
 //! Regression: in 0.2.1 the scan wrote SC3 = 0 and dropped the averaging
 //! from `set_averaging()` (see `test_averaging_*`).
 //!
+//! `start_continuous_scan` (1-2 channels, one DMA channel reading RA then RB)
+//! has its own tests at the end (`test_continuous_*`). Regression: up to
+//! 0.3.1 its DMA read RA for both slots and stopped after the first scan.
+//!
 //! Setup as on the FLXS1: ADC1, PDB0, DMA-A = ch4, DMA-B = ch5.
 //!
 //! Priority: HIGH
@@ -175,6 +179,62 @@ fn check_slots(state: &mut State, channels: &'static [u8]) {
     );
 }
 
+/// A value the 10-bit ADC never gives: a slot that still holds it was not
+/// rewritten by the DMA.
+const SENTINEL: u16 = 0xBEEF;
+
+/// Run `start_continuous_scan` over `channels` (1 or 2) on DMA-A. 500 times
+/// over about 100 ms: write SENTINEL to every slot, wait 200 µs (two scans at
+/// 10 kHz), then check that each slot was rewritten and holds its channel.
+/// A DMA that stops after one scan leaves SENTINEL; a DMA that reads RA for
+/// both slots puts channel 0 in slot 1.
+fn check_continuous(state: &mut State, channels: &'static [u8]) {
+    let n = channels.len();
+    let config = ScanConfig {
+        channels,
+        modulus: MODULUS,
+        prescaler: Prescaler::Div1,
+        multiplier: Multiplier::Mult1,
+    };
+    let mut results = [SENTINEL; 2];
+    let slots = results.as_mut_ptr();
+    let scan = state.adc.start_continuous_scan(
+        &config,
+        &mut results[..n],
+        &mut state.dma_a,
+        &mut state.pdb,
+    );
+
+    cortex_m::asm::delay(72_000 * 2); // 2 ms: several scans
+    let mut wrong = [0u32; 2];
+    let mut stale = [0u32; 2];
+    for _ in 0..500 {
+        for slot in 0..n {
+            // SAFETY: slot < n stays inside `results`. The DMA writes the same
+            // u16s; the scan only reads them with volatile reads.
+            unsafe { slots.add(slot).write_volatile(SENTINEL) };
+        }
+        cortex_m::asm::delay(72 * 200); // 200 µs
+        for (slot, &ch) in channels.iter().enumerate() {
+            let v = scan.read_latest(slot);
+            if v == SENTINEL {
+                stale[slot] += 1;
+            } else if !(if ch == VREFSH { v > HIGH && v <= 1023 } else { v < LOW }) {
+                wrong[slot] += 1;
+            }
+        }
+    }
+    let last: [u16; 2] = core::array::from_fn(|i| if i < n { scan.read_latest(i) } else { 0 });
+    drop(scan);
+
+    defmt::info!(
+        "continuous {}: not rewritten {}, wrong {}, last {}",
+        channels, &stale[..n], &wrong[..n], &last[..n]
+    );
+    defmt::assert!(stale[..n].iter().all(|&s| s == 0), "scan stopped: not rewritten {}", &stale[..n]);
+    defmt::assert!(wrong[..n].iter().all(|&w| w == 0), "wrong channel in a slot: {}", &wrong[..n]);
+}
+
 #[defmt_test::tests]
 mod tests {
     use super::*;
@@ -263,5 +323,34 @@ mod tests {
     #[test]
     fn test_5ch_middle_slot(state: &mut super::State) {
         check_slots(state, &[VREFSL, VREFSL, VREFSH, VREFSL, VREFSL]);
+    }
+
+    /// Continuous scan, VREFSH in slot 0 (RA). Up to 0.3.1 slot 1 read RA
+    /// too, so it held VREFSH: [1023, 1023].
+    #[test]
+    fn test_continuous_2ch_slot0(state: &mut super::State) {
+        check_continuous(state, &[VREFSH, VREFSL]);
+    }
+
+    /// Continuous scan, VREFSH in slot 1: only a DMA that reads RB gets it.
+    #[test]
+    fn test_continuous_2ch_slot1(state: &mut super::State) {
+        check_continuous(state, &[VREFSL, VREFSH]);
+    }
+
+    /// One channel, right after the 2-channel scans: pre-trigger 1 must be
+    /// off again, or SC1B converts into an RB that nothing reads.
+    #[test]
+    fn test_continuous_1ch_after_2ch(state: &mut super::State) {
+        check_continuous(state, &[VREFSH]);
+        check_continuous(state, &[VREFSL]);
+    }
+
+    /// A multi-channel scan on the same ADC, PDB and DMA-A still runs after a
+    /// continuous scan (in 0.2.2 a diagnostic run saw it stall).
+    #[test]
+    fn test_multi_after_continuous(state: &mut super::State) {
+        check_continuous(state, &[VREFSL, VREFSH]);
+        check_slots(state, &[VREFSL, VREFSH, VREFSL, VREFSL]);
     }
 }
