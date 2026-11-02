@@ -10,6 +10,9 @@ license = "MIT OR Apache-2.0"
 loopback = []
 # Tests that need the Teensy USB port cabled to the host.
 usb-host = []
+# The HAL's 4-endpoint USB build: 6 packet buffers sit in the BDT block
+# (usb_bufs tests that path).
+usb-endpoints-4 = ["mk20dx-hal/usb-endpoints-4"]
 
 [dependencies]
 mk20dx-hal = { path = "../mk20dx-hal", features = ["mk20d7", "rt", "critical-section", "defmt", "async"] }
@@ -94,6 +97,10 @@ name = "i2c"
 harness = false
 [[test]]
 name = "usb"
+harness = false
+
+[[test]]
+name = "usb_bufs"
 harness = false
 
 # Additional self-test binaries (Phases 13-21)
